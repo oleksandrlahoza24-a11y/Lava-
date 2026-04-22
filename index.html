@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Acid Pool</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:100%; height:100%; overflow:hidden; background:#020a01; touch-action:none; -webkit-user-select:none; user-select:none; }
+  canvas { display:block; position:fixed; top:0; left:0; touch-action:none; cursor:crosshair; }
+  #ui {
+    position:fixed; bottom:28px; left:50%; transform:translateX(-50%);
+    color:rgba(160,255,50,0.55);
+    font-family:'Share Tech Mono',monospace; font-size:11px;
+    letter-spacing:5px; text-transform:uppercase; pointer-events:none;
+    transition:opacity 2.5s; white-space:nowrap;
+    text-shadow:0 0 16px rgba(120,255,20,0.5);
+  }
+  #ui.fade { opacity:0; }
+  #badge {
+    position:fixed; top:20px; left:50%; transform:translateX(-50%);
+    color:rgba(160,255,50,0.28); font-family:'Share Tech Mono',monospace;
+    font-size:10px; letter-spacing:7px; pointer-events:none; white-space:nowrap;
+    text-shadow:0 0 10px rgba(120,255,20,0.3);
+  }
+  .corner { position:fixed; width:40px; height:40px; pointer-events:none; }
+  #c1 { top:0;    left:0;    border-top:1px solid rgba(140,255,40,0.3); border-left:1px solid rgba(140,255,40,0.3); }
+  #c2 { top:0;    right:0;   border-top:1px solid rgba(140,255,40,0.3); border-right:1px solid rgba(140,255,40,0.3); }
+  #c3 { bottom:0; left:0;    border-bottom:1px solid rgba(140,255,40,0.3); border-left:1px solid rgba(140,255,40,0.3); }
+  #c4 { bottom:0; right:0;   border-bottom:1px solid rgba(140,255,40,0.3); border-right:1px solid rgba(140,255,40,0.3); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="corner" id="c1"></div><div class="corner" id="c2"></div>
+<div class="corner" id="c3"></div><div class="corner" id="c4"></div>
+<div id="badge">H2SO4 · CORROSIVE</div>
+<div id="ui">disturb the surface</div>
+<script>
+'use strict';
+const canvas = document.getElementById('c');
+const ui = document.getElementById('ui');
+const DPR = Math.min(window.devicePixelRatio||1,2);
+let W=0,H=0,CW=0,CH=0;
+function resize(){
+  CW=window.innerWidth; CH=window.innerHeight;
+  W=Math.round(CW*DPR); H=Math.round(CH*DPR);
+  canvas.width=W; canvas.height=H;
+  canvas.style.width=CW+'px'; canvas.style.height=CH+'px';
+}
+resize(); window.addEventListener('resize',resize);
+
+const gl = canvas.getContext('webgl',{antialias:false,alpha:false,powerPreference:'high-performance'})
+        || canvas.getContext('experimental-webgl',{antialias:false,alpha:false});
+if(!gl){ document.body.innerHTML='<p style="color:#8f4;font-family:monospace;padding:40px">WebGL unavailable</p>'; throw 0; }
+
+const extFloat  = gl.getExtension('OES_texture_float');
+const extHalfF  = gl.getExtension('OES_texture_half_float');
+const extFL     = gl.getExtension('OES_texture_float_linear');
+const extHL     = gl.getExtension('OES_texture_half_float_linear');
+gl.getExtension('WEBGL_color_buffer_float');
+gl.getExtension('EXT_color_buffer_half_float');
+
+function canRT(type){
+  const t=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,t);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,4,4,0,gl.RGBA,type,null);
+  const f=gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER,f);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,t,0);
+  const ok=gl.checkFramebufferStatus(gl.FRAMEBUFFER)===gl.FRAMEBUFFER_COMPLETE;
+  gl.deleteFramebuffer(f); gl.deleteTexture(t); gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+  return ok;
+}
+let FTYPE,ULIN,UINT8;
+if(extFloat&&canRT(gl.FLOAT)){FTYPE=gl.FLOAT;ULIN=!!extFL;UINT8=false;}
+else if(extHalfF&&canRT(extHalfF.HALF_FLOAT_OES)){FTYPE=extHalfF.HALF_FLOAT_OES;ULIN=!!extHL;UINT8=false;}
+else{FTYPE=gl.UNSIGNED_BYTE;ULIN=true;UINT8=true;}
+
+const S=512;
+
+const VERT=`attribute vec2 aPos; varying vec2 vUV;
+void main(){ vUV=aPos*.5+.5; gl_Position=vec4(aPos,0,1); }`;
+
+const SIM=(UINT8?'#define U8\n':'')+`
+precision highp float;
+varying vec2 vUV;
+uniform sampler2D uS; uniform vec2 uTx; uniform vec2 uM; uniform float uR,uStr;
+#ifdef U8
+  vec2 e(float v){float t=clamp(v*.5+.5,0.,.99999)*255.;return vec2(floor(t)/255.,fract(t));}
+  float d(vec2 v){return(v.x+v.y/255.)*2.-1.;}
+  float C(vec2 u){return d(texture2D(uS,u).rg);}
+  float P(vec2 u){return d(texture2D(uS,u).ba);}
+#else
+  float C(vec2 u){return texture2D(uS,u).r*2.-1.;}
+  float P(vec2 u){return texture2D(uS,u).g*2.-1.;}
+#endif
+void main(){
+  float c=C(vUV),p=P(vUV);
+  float n=C(vUV+vec2(0.,uTx.y)),s=C(vUV-vec2(0.,uTx.y)),
+        e2=C(vUV+vec2(uTx.x,0.)),w=C(vUV-vec2(uTx.x,0.));
+  float nx=(-p+(n+s+e2+w)*.5)*.993;
+  float bx=min(vUV.x,1.-vUV.x)*14.,by=min(vUV.y,1.-vUV.y)*14.;
+  nx*=mix(.76,1.,clamp(min(bx,by),0.,1.));
+  float dist=length(vUV-uM);
+  nx-=smoothstep(uR,0.,dist)*uStr;
+  nx=clamp(nx,-1.,1.);
+  #ifdef U8
+    gl_FragColor=vec4(e(nx),e(c));
+  #else
+    gl_FragColor=vec4(nx*.5+.5,c*.5+.5,0.,1.);
+  #endif
+}`;
+
+const RENDER=(UINT8?'#define U8\n':'')+`
+precision highp float;
+varying vec2 vUV;
+uniform sampler2D uW; uniform vec2 uTx; uniform float uTime,uAspect;
+
+float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+float vn(vec2 p){
+  vec2 i=floor(p),f=p-i; f=f*f*(3.-2.*f);
+  return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),
+             mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x),f.y);
+}
+float fbm(vec2 p){float v=0.,a=.5;for(int i=0;i<6;i++){v+=vn(p)*a;p*=2.1;a*=.5;}return v;}
+
+// Thick viscous acid surface — churning sulphur tones
+vec3 acidSurface(vec2 uv, float t){
+  float s1=fbm(uv*3.5+t*.08);
+  float s2=fbm(uv*6.0-t*.05+1.7);
+  float s3=fbm(uv*2.2+t*.04+3.3);
+  float s4=fbm(uv*12.+t*.12+7.1);
+  vec3 dark  =vec3(0.04,0.10,0.00);
+  vec3 mid   =vec3(0.22,0.52,0.03);
+  vec3 bright=vec3(0.65,0.95,0.06);
+  vec3 hot   =vec3(0.92,1.00,0.48);
+  vec3 col=mix(dark,mid,s1);
+  col=mix(col,bright,s2*.65);
+  col=mix(col,hot,pow(s3,2.8)*.50);
+  col*=.88+s4*.24;
+  return col;
+}
+
+// Barely-visible corroded floor
+vec3 acidFloor(vec2 uv, float t){
+  float d=t*.012;
+  float r=fbm(uv*5.+d)*fbm(uv*3.5+1.3+d);
+  vec3 metal=mix(vec3(0.12,0.09,0.06),vec3(0.22,0.16,0.09),r);
+  float rust=smoothstep(.45,.72,fbm(uv*4.5+2.));
+  metal=mix(metal,vec3(0.36,0.12,0.02),rust*.7);
+  float dep=smoothstep(.60,.82,fbm(uv*8.+5.));
+  metal=mix(metal,vec3(0.06,0.24,0.01),dep*.85);
+  return metal;
+}
+
+#ifdef U8
+  float H(vec2 uv){vec4 s=texture2D(uW,uv);return(s.r+s.g/255.)*2.-1.;}
+#else
+  float H(vec2 uv){return texture2D(uW,uv).r*2.-1.;}
+#endif
+
+float GGX(float ndh,float r){float a=r*r*r*r,d=ndh*ndh*(a-1.)+1.;return a/(3.14159*d*d+1e-5);}
+
+void main(){
+  vec2 uv=vUV;
+  vec2 tx=uTx*1.8;
+
+  float hL=H(uv-vec2(tx.x,0.)),hR=H(uv+vec2(tx.x,0.));
+  float hU=H(uv+vec2(0.,tx.y)),hD=H(uv-vec2(0.,tx.y));
+  float hLU=H(uv+vec2(-tx.x,tx.y)),hRU=H(uv+vec2(tx.x,tx.y));
+  float hLD=H(uv+vec2(-tx.x,-tx.y)),hRD=H(uv+vec2(tx.x,-tx.y));
+  float ns=4.5;
+  float dX=(hRD+2.*hR+hRU-hLD-2.*hL-hLU)*ns/uAspect;
+  float dY=(hLU+2.*hU+hRU-hLD-2.*hD-hRD)*ns;
+  vec3 N=normalize(vec3(-dX,-dY,1.));
+  float h=H(uv);
+
+  vec3 V=vec3(0.,0.,1.);
+  vec3 L=normalize(vec3(.15,.65,1.));
+  vec3 Hv=normalize(V+L);
+
+  float cosI=max(dot(N,V),0.);
+  float F=clamp(.04+.96*pow(1.-cosI,5.),0.,1.);
+
+  vec2 rOff=vec2(N.x/uAspect,N.y)*.020;
+  vec2 rUV=clamp(uv+rOff,.001,.999);
+
+  // FIX: acidFloor takes (uv, t) — was missing the second argument uTime
+  vec3 floor3=acidFloor(rUV+vec2(uTime*.003,0.),uTime);
+  floor3*=exp(-vec3(6.5,2.0,7.0)*3.8);
+
+  float lap=hU+hD+hL+hR-4.*h;
+  float cc=pow(max(0.,-lap*8.),1.8)*1.8;
+  vec2 cUV=rUV*vec2(uAspect*10.,10.);
+  float ca=sin(cUV.x*1.9+uTime*2.8)*sin(cUV.y*1.8+uTime*2.3)
+          +sin(cUV.x*1.2-uTime*1.9+1.)*sin(cUV.y*1.3-uTime*2.1+.9)*.7;
+  float animC=pow(max(0.,ca*.2+.5),3.2)*.55;
+  floor3*=1.+cc+animC;
+
+  vec3 R=reflect(-L,N);
+  float skyT=clamp(R.y*.8+.5,0.,1.);
+  vec3 sky=mix(vec3(.22,.48,.02),vec3(.04,.12,.00),skyT*skyT);
+  float sd=dot(normalize(R.xy*.5+.5),normalize(vec2(.15,.75)));
+  sky+=vec3(.88,1.,.08)*pow(max(sd,0.),180.)*3.5;
+
+  vec3 surf=acidSurface(uv,uTime);
+  vec2 sUV=uv+vec2(N.x*.045,N.y*.045);
+  vec3 surf2=acidSurface(sUV+vec2(uTime*.018,0.),uTime);
+  surf=mix(surf,surf2,.48);
+
+  vec3 col=surf;
+  col=mix(col,floor3,.035);
+  col=mix(col,sky,clamp(F*.28+.02,0.,1.));
+
+  vec3 deepAcid=vec3(.02,.08,.00);
+  col=mix(col,deepAcid,clamp(.5-h*1.8,0.,1.)*.55);
+
+  float sss=smoothstep(0.,.25,h)*max(0.,dot(N,L));
+  col+=vec3(.12,1.,.02)*sss*.35;
+
+  float rough=max(.008,.008+abs(h)*.06);
+  float NdotH=max(dot(N,Hv),0.);
+  float NdotL=max(dot(N,L),0.);
+  col+=vec3(.90,1.,.55)*GGX(NdotH,rough)*NdotL*.28*F;
+  col+=vec3(.50,1.,.06)*pow(max(dot(R,V),0.),50.)*.22;
+
+  float crest=smoothstep(.14,.36,h);
+  col=mix(col,vec3(.86,1.,.52),crest*pow(fbm(uv*26.+uTime*.9),1.2)*.92);
+  col+=vec3(.48,1.,.10)*smoothstep(.05,.16,abs(h))*fbm(uv*19.+uTime*.45)*.16;
+
+  vec2 bg=uv*vec2(uAspect*38.,38.);
+  vec2 bc=floor(bg),bf=fract(bg);
+  float br=hash(bc),br2=hash(bc+17.3),br3=hash(bc+31.7);
+  float brise=fract(uTime*(.12+br3*.22)+br2);
+  float bdist=length(bf-vec2(.3+br*.4,brise));
+  float bub=smoothstep(.07,0.,bdist)*step(br,.10);
+  col=mix(col,vec3(.80,1.,.42),bub*.95);
+  col+=vec3(.55,1.,.18)*smoothstep(.09,.07,bdist)*smoothstep(.04,.07,bdist)*step(br,.10)*.6;
+
+  col+=vec3(.78,1.,.08)*step(.965,hash(floor(uv*55.+uTime*.3)))*.45;
+
+  vec2 vd=(vUV*2.-1.)*vec2(uAspect,1.);
+  col*=clamp(1.-dot(vd,vd)*.065,0.,1.);
+
+  col=col*(1.+col*.18)/(col+.88)*1.05;
+  col=pow(max(col,vec3(0.)),vec3(1./2.2));
+  gl_FragColor=vec4(col,1.);
+}`;
+
+function mkSh(type,src){
+  const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function mkProg(fsrc){
+  const p=gl.createProgram();
+  gl.attachShader(p,mkSh(gl.VERTEX_SHADER,VERT));
+  gl.attachShader(p,mkSh(gl.FRAGMENT_SHADER,fsrc));
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const u={},n=gl.getProgramParameter(p,gl.ACTIVE_UNIFORMS);
+  for(let i=0;i<n;i++){const x=gl.getActiveUniform(p,i);u[x.name]=gl.getUniformLocation(p,x.name);}
+  return{p,u};
+}
+
+let simP,renP;
+try{simP=mkProg(SIM);renP=mkProg(RENDER);}
+catch(e){document.body.innerHTML=`<pre style="color:#8f4;padding:20px;font-size:11px;white-space:pre-wrap">${e.message}</pre>`;throw e;}
+
+const qb=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,qb);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);
+function bindQ(prog){
+  gl.bindBuffer(gl.ARRAY_BUFFER,qb);
+  const loc=gl.getAttribLocation(prog.p,'aPos');
+  gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+}
+
+function mkData(){
+  const n=S*S*4;
+  if(!UINT8){
+    if(FTYPE===gl.FLOAT) return new Float32Array(n).fill(.5);
+    return new Uint16Array(n).fill(0x3800);
+  }
+  const d=new Uint8Array(n);
+  for(let i=0;i<n;i+=4){d[i]=127;d[i+1]=128;d[i+2]=127;d[i+3]=128;}
+  return d;
+}
+function mkFBO(){
+  const tex=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,tex);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,S,S,0,gl.RGBA,FTYPE,mkData());
+  const f=ULIN?gl.LINEAR:gl.NEAREST;
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,f);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,f);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  const fbo=gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER,fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,tex,0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null); return{tex,fbo};
+}
+let fboA=mkFBO(),fboB=mkFBO();
+
+const ptr={x:.5,y:.5,active:false,prevX:.5,prevY:.5};
+let gone=false;
+function toUV(cx,cy){return{x:cx/CW,y:1.-cy/CH};}
+function dismiss(){if(gone)return;gone=true;ui.classList.add('fade');setTimeout(()=>ui.style.display='none',3000);}
+function onDown(e){const t=e.touches?e.touches[0]:e,uv=toUV(t.clientX,t.clientY);ptr.prevX=uv.x;ptr.prevY=uv.y;ptr.x=uv.x;ptr.y=uv.y;ptr.active=true;dismiss();}
+function onMove(e){if(!ptr.active)return;const t=e.touches?e.touches[0]:e;ptr.prevX=ptr.x;ptr.prevY=ptr.y;const uv=toUV(t.clientX,t.clientY);ptr.x=uv.x;ptr.y=uv.y;}
+function onUp(){ptr.active=false;}
+canvas.addEventListener('mousedown',onDown);
+canvas.addEventListener('mousemove',onMove);
+window.addEventListener('mouseup',onUp);
+canvas.addEventListener('touchstart',e=>{e.preventDefault();onDown(e);},{passive:false});
+canvas.addEventListener('touchmove',e=>{e.preventDefault();onMove(e);},{passive:false});
+canvas.addEventListener('touchend',e=>{e.preventDefault();onUp();},{passive:false});
+
+const drops=[]; let lastDrop=0;
+function spawnDrop(now){
+  const gap=ptr.active?9999:(260+Math.random()*480);
+  if(now-lastDrop<gap)return; lastDrop=now;
+  drops.push({x:.06+Math.random()*.88,y:.06+Math.random()*.88,str:.07+Math.random()*.15,born:now,ttl:28+Math.random()*42});
+}
+
+function simulate(src,dst,mx,my,active,str){
+  gl.bindFramebuffer(gl.FRAMEBUFFER,dst.fbo); gl.viewport(0,0,S,S);
+  gl.useProgram(simP.p); bindQ(simP);
+  const u=simP.u;
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,src.tex);
+  gl.uniform1i(u.uS,0); gl.uniform2f(u.uTx,1./S,1./S);
+  gl.uniform2f(u.uM,mx,my); gl.uniform1f(u.uR,.038); gl.uniform1f(u.uStr,active?str:0.);
+  gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+}
+let time=0;
+function render(src){
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null); gl.viewport(0,0,W,H);
+  gl.useProgram(renP.p); bindQ(renP);
+  const u=renP.u;
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,src.tex);
+  gl.uniform1i(u.uW,0); gl.uniform2f(u.uTx,1./S,1./S);
+  gl.uniform1f(u.uTime,time); gl.uniform1f(u.uAspect,W/H);
+  gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+}
+
+function frame(now){
+  requestAnimationFrame(frame); time=now*.001;
+  spawnDrop(now);
+  let mx=ptr.x,my=ptr.y,ma=ptr.active,ms=.18;
+  if(!ma&&drops.length>0){const d=drops[0];if(now-d.born<d.ttl){mx=d.x;my=d.y;ma=true;ms=d.str;}else drops.shift();}
+  if(ptr.active){const spd=Math.hypot(ptr.x-ptr.prevX,ptr.y-ptr.prevY);ms=Math.min(.10+spd*18.,.55);}
+  for(let i=0;i<4;i++){simulate(fboA,fboB,mx,my,ma&&i<2,ms);const tmp=fboA;fboA=fboB;fboB=tmp;}
+  render(fboA);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
